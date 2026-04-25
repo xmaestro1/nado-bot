@@ -1,11 +1,20 @@
 """
-Nado.xyz Grid Trading Bot — Perps Edition
+Nado.xyz Grid Trading Bot — Komplett neu
 ==========================================
-Korrekte Grid Logik für Perpetuals:
-- Eine Position, mehrere Levels
-- Kaufe günstig → verkaufe teurer
-- Positionsgröße wächst beim Rückgang
-- Positionsgröße schrumpft beim Anstieg
+Alle Fehler behoben:
+1. Buy nur beim Preisfall (nicht beim Anstieg)
+2. Alte Positionen bekommen Verkaufsziel
+3. Code 2064 wird korrekt behandelt
+4. Grid Neuaufbau funktioniert immer
+5. Kein sofortiger Kauf beim Start
+6. DRY_RUN = False (Live)
+7. place_order size korrekt
+8. Toleranz auf 0.3% erhöht
+9. Sell Break nur bei Erfolg
+10. State via Nado API (kein File-Problem)
+11. Sync jede Minute
+12. grid_center entfernt
+13. Vorheriger Preis gespeichert für Richtungsprüfung
 
 Einrichten:
     SIGNER_KEY = 1-Click Trading Key (app.nado.xyz → Settings)
@@ -28,28 +37,30 @@ except:
 # ═══════════════════════════════════════════════════════════
 WALLET_ADDR  = "0x14A26C3F3fF2C7A5bC4a1E5E5B15972628288ab7"
 SIGNER_KEY   = "0xf7bbe14bbca148872730e063ca969d37f2d7006b22e4486877adaef9206192f9"
+SUBACCOUNT   = "0x14a26c3f3ff2c7a5bc4a1e5e5b15972628288ab764656661756c740000000000"
 
 PRODUCT_ID   = 2
 CHAIN_ID     = 57073
 GATEWAY      = "https://gateway.prod.nado.xyz/v1"
-ARCHIVE      = "https://archive.prod.nado.xyz/v1"
 HEADERS      = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0031   # BTC pro Grid Level
+ORDER_SIZE   = 0.0015   # BTC pro Grid Level
 GRID_LEVELS  = 5        # Anzahl Buy Levels
 GRID_STEP    = 0.4      # % Abstand zwischen Levels
 GRID_PROFIT  = 0.4      # % Gewinn pro Level
+BUY_TOL      = 0.003    # 0.3% Toleranz für Buy Level (Fix 8)
+SELL_TOL     = 0.001    # 0.1% Toleranz für Sell Level
+SYNC_EVERY   = 2        # Sync alle 2 Ticks = ~60 Sek (Fix 13)
 INTERVAL     = 30
-DRY_RUN      = True
-STATE_FILE   = "grid_state.json"
+DRY_RUN      = False    # Fix 6
 # ═══════════════════════════════════════════════════════════
 
-# Grid State
-buy_levels   = {}   # {preis: {"size": 0.0015, "sell_at": preis*1.004, "filled": False}}
-total_size   = 0.0  # Gesamte offene Position in BTC
+# State — nur im RAM (Fix 11: kein File das bei Neustart gelöscht wird)
+levels       = {}   # {str(buy_price): {"buy": int, "sell": int, "filled": bool}}
+total_size   = 0.0
 wins         = 0
 total_pnl    = 0.0
-grid_center  = 0.0
+prev_preis   = None  # Für Richtungsprüfung (Fix 1)
 
 
 def ts():    return datetime.now().strftime("%H:%M:%S")
@@ -57,32 +68,6 @@ def log(m, c=""): print(f"{c}[{ts()}] {m}{X}" if c else f"[{ts()}] {m}"); sys.st
 def fmt(x):
     try: return f"${float(x):,.2f}"
     except: return "?"
-
-
-# ─── STATE ────────────────────────────────────────────────
-
-def save_state():
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump({"buy_levels": buy_levels, "total_size": total_size,
-                      "wins": wins, "total_pnl": total_pnl, "grid_center": grid_center}, f)
-    except: pass
-
-def load_state():
-    global buy_levels, total_size, wins, total_pnl, grid_center
-    try:
-        if os.path.exists(STATE_FILE):
-            d = json.load(open(STATE_FILE))
-            buy_levels  = d.get("buy_levels", {})
-            total_size  = d.get("total_size", 0.0)
-            wins        = d.get("wins", 0)
-            total_pnl   = d.get("total_pnl", 0.0)
-            grid_center = d.get("grid_center", 0.0)
-            if buy_levels:
-                filled = sum(1 for v in buy_levels.values() if v["filled"])
-                log(f"State: {filled} offene Positionen | Größe:{total_size:.4f} BTC | {wins}W P&L:{total_pnl:+.2f}%", Y)
-    except Exception as e:
-        log(f"State Fehler: {e}", Y)
 
 
 # ─── API ──────────────────────────────────────────────────
@@ -102,13 +87,8 @@ def get_preis():
         log(f"Preis Fehler: {e}", Y)
     return None
 
-
-# ─── NADO SYNC ───────────────────────────────────────────
-
-SUBACCOUNT = '0xc15263578ce7fd6290f56ab78a23d3b6c653b28c64656661756c740000000000'
-
 def get_nado_position():
-    """Holt echte Position von Nado API."""
+    """Holt echte BTC Position von Nado."""
     try:
         url = f"{GATEWAY}/query?type=subaccount_info&subaccount={SUBACCOUNT}"
         r = requests.get(url, headers={"Accept-Encoding": "gzip"}, timeout=15, verify=False)
@@ -116,28 +96,11 @@ def get_nado_position():
         data = r.json().get("data", {})
         for pb in data.get("perp_balances", []):
             if pb.get("product_id") == PRODUCT_ID:
-                amt = float(pb["balance"]["amount"]) / 1e18
-                return amt  # positiv = LONG, negativ = SHORT, 0 = kein Trade
+                return float(pb["balance"]["amount"]) / 1e18
     except Exception as e:
-        log(f"Sync Fehler: {e}", Y)
+        log(f"Nado API Fehler: {e}", Y)
     return None
 
-def sync_mit_nado():
-    """Synchronisiert Bot-State mit echter Nado Position."""
-    global total_size, buy_levels
-    nado_pos = get_nado_position()
-    if nado_pos is None:
-        return
-    nado_size = abs(nado_pos)
-    if abs(nado_size - total_size) > 0.0001:
-        log(f"⚠️ Sync: Bot={total_size:.4f} BTC, Nado={nado_size:.4f} BTC — korrigiere!", Y)
-        total_size = nado_size
-        if nado_size == 0:
-            # Alle Positionen auf Nado geschlossen — Bot State zurücksetzen
-            for key in buy_levels:
-                buy_levels[key]["filled"] = False
-            log("State zurückgesetzt — kein offener Trade auf Nado", Y)
-        save_state()
 
 # ─── ORDER ────────────────────────────────────────────────
 
@@ -145,26 +108,29 @@ def sender_hex():
     ab = bytes.fromhex(WALLET_ADDR.lower().replace("0x",""))
     return "0x" + (ab + b"default".ljust(12, b"\x00")).hex()
 
-def place_order(is_buy, price, size=ORDER_SIZE, reduce_only=False):
+def place_order(is_buy, price, reduce_only=False):
+    """Platziert eine Limit Order mit 0.1% Slippage."""
     if DRY_RUN:
-        log(f"[DRY] {'BUY' if is_buy else 'SELL'} {size} BTC @ {fmt(price)}", Y)
+        log(f"[DRY] {'BUY' if is_buy else 'SELL'} {ORDER_SIZE} BTC @ {fmt(price)}", Y)
         return True
     try:
         from eth_account import Account
         px    = round(price * (1.001 if is_buy else 0.999)) * int(1e18)
-        amt   = int(size*1e18) if is_buy else -int(size*1e18)
+        amt   = int(ORDER_SIZE * 1e18) if is_buy else -int(ORDER_SIZE * 1e18)
         exp   = int(time.time()) + 60
-        nonce = ((int(time.time()*1000)+5000) << 20) + random.randint(0,999)
-        apx   = 1 | (1<<11 if reduce_only else 0)
+        nonce = ((int(time.time()*1000) + 5000) << 20) + random.randint(0, 999)
+        apx   = 1 | (1 << 11 if reduce_only else 0)
         sndr  = sender_hex()
-        dom = {"name":"Nado","version":"0.0.1","chainId":CHAIN_ID,"verifyingContract":f"0x{PRODUCT_ID:040x}"}
-        typ = {"Order":[{"name":"sender","type":"bytes32"},{"name":"priceX18","type":"int128"},
-                        {"name":"amount","type":"int128"},{"name":"expiration","type":"uint64"},
-                        {"name":"nonce","type":"uint64"},{"name":"appendix","type":"uint128"}]}
+        dom   = {"name":"Nado","version":"0.0.1","chainId":CHAIN_ID,"verifyingContract":f"0x{PRODUCT_ID:040x}"}
+        typ   = {"Order":[
+            {"name":"sender","type":"bytes32"},{"name":"priceX18","type":"int128"},
+            {"name":"amount","type":"int128"},{"name":"expiration","type":"uint64"},
+            {"name":"nonce","type":"uint64"},{"name":"appendix","type":"uint128"}
+        ]}
         msg = {"sender":sndr,"priceX18":px,"amount":amt,"expiration":exp,"nonce":nonce,"appendix":apx}
         acc = Account.from_key(SIGNER_KEY)
         sig = acc.sign_typed_data(domain_data=dom, message_types=typ, message_data=msg).signature.hex()
-        if not sig.startswith("0x"): sig = "0x"+sig
+        if not sig.startswith("0x"): sig = "0x" + sig
         pld = {"place_order":{"product_id":PRODUCT_ID,"order":{
             "sender":sndr,"priceX18":str(px),"amount":str(amt),
             "expiration":str(exp),"nonce":str(nonce),"appendix":str(apx)
@@ -172,92 +138,154 @@ def place_order(is_buy, price, size=ORDER_SIZE, reduce_only=False):
         r = requests.post(f"{GATEWAY}/execute", json=pld, headers=HEADERS, timeout=15, verify=False)
         d = r.json()
         if d.get("status") == "success":
-            log(f"✅ OK! Digest:{d.get('data',{}).get('digest','')[:16]}", G)
-            return True
-        err  = d.get("error", "")
+            log(f"✅ OK!", G); return True
         code = d.get("error_code", 0)
+        err  = d.get("error", "")
+        if code == 2064:
+            log(f"⚠️ Position nicht auf Nado (2064) — Level zurücksetzen", Y)
+            return "RESET"  # Fix 3: spezieller Rückgabewert
         log(f"❌ {err} (Code:{code})", R)
         return False
     except Exception as e:
-        log(f"Order Exception: {e}", R); return False
+        log(f"Order Exception: {e}", R)
+        return False
 
 
 # ─── GRID ─────────────────────────────────────────────────
 
 def setup_grid(preis):
-    """Erstellt Grid Levels — Level 0 = aktueller Preis, Rest darunter."""
-    global buy_levels, grid_center, total_size
-    buy_levels  = {}
-    total_size  = 0.0
-    grid_center = round(preis)
+    """Baut Grid mit GRID_LEVELS unter aktuellem Preis."""
+    global levels, total_size
+    levels     = {}
+    total_size = 0.0
 
-    # Level 0: aktueller Preis (sofort kaufen)
-    sell_price_0 = round(preis * (1 + GRID_PROFIT / 100))
-    buy_levels[str(round(preis))] = {
-        "buy_price":  round(preis),
-        "sell_price": sell_price_0,
-        "size":       ORDER_SIZE,
-        "filled":     False
-    }
-
-    # Level 1-4: darunter
-    for i in range(1, GRID_LEVELS):
+    # Alle Levels UNTER aktuellem Preis (Fix 5: kein sofortiger Kauf)
+    for i in range(1, GRID_LEVELS + 1):
         buy_price  = round(preis * (1 - i * GRID_STEP / 100))
         sell_price = round(buy_price * (1 + GRID_PROFIT / 100))
-        buy_levels[str(buy_price)] = {
-            "buy_price":  buy_price,
-            "sell_price": sell_price,
-            "size":       ORDER_SIZE,
-            "filled":     False
+        levels[str(buy_price)] = {
+            "buy":    buy_price,
+            "sell":   sell_price,
+            "filled": False
         }
 
-    levels_str = " | ".join([fmt(float(k)) for k in sorted(buy_levels.keys(), key=float, reverse=True)])
-    log(f"Grid @ {fmt(preis)} | Levels: {levels_str}", C)
-    save_state()
+    lvl_str = " | ".join([fmt(v["buy"]) for v in sorted(levels.values(), key=lambda x: x["buy"], reverse=True)])
+    log(f"Grid @ {fmt(preis)} | Buy Levels: {lvl_str}", C)
+    log(f"Warte bis BTC fällt auf {fmt(max(v['buy'] for v in levels.values()))}...", Y)
+
+
+def sync_nado(preis):
+    """
+    Synchronisiert mit echter Nado Position.
+    Fix 2: Erstellt Verkaufsziel für unbekannte Positionen.
+    Fix 11: State kommt von Nado API, nicht von File.
+    """
+    global total_size, levels
+
+    nado_amt = get_nado_position()
+    if nado_amt is None: return
+
+    nado_size = max(0.0, nado_amt)  # nur LONG
+
+    if abs(nado_size - total_size) < 0.0001:
+        return  # Alles synchron
+
+    log(f"Sync: Bot={total_size:.4f} BTC | Nado={nado_size:.4f} BTC", Y)
+
+    if nado_size == 0 and total_size > 0:
+        # Nado hat keine Position mehr → alle Levels zurücksetzen
+        log("Nado: keine Position — alle Levels zurücksetzen", Y)
+        for key in levels:
+            levels[key]["filled"] = False
+        total_size = 0.0
+
+    elif nado_size > total_size:
+        # Nado hat mehr als Bot weiß → unbekannte Position
+        diff = round(nado_size - total_size, 4)
+        log(f"Unbekannte Position: {diff:.4f} BTC — erstelle Verkaufsziel @ {fmt(preis * 1.004)}", Y)
+        # Fix 2: Verkaufsziel für unbekannte Position erstellen
+        sell_price = round(preis * (1 + GRID_PROFIT / 100))
+        key = f"unknown_{int(time.time())}"
+        levels[key] = {
+            "buy":    round(preis),
+            "sell":   sell_price,
+            "filled": True   # bereits gefüllt
+        }
+        total_size = nado_size
+
+    elif nado_size < total_size:
+        # Nado hat weniger → Position wurde extern geschlossen
+        total_size = nado_size
+        # Filled Levels anpassen
+        filled_count = round(total_size / ORDER_SIZE)
+        count = 0
+        for key in sorted(levels.keys()):
+            if levels[key]["filled"]:
+                if count >= filled_count:
+                    levels[key]["filled"] = False
+                count += 1
+
 
 def check_grid(preis):
-    """Prüft Grid Levels und führt Orders aus."""
-    global total_size, wins, total_pnl
+    """
+    Prüft Grid Levels und führt Orders aus.
+    Fix 1: Buy nur wenn Preis fällt.
+    Fix 9: Break nur bei Erfolg.
+    """
+    global total_size, wins, total_pnl, prev_preis
+
+    falling = prev_preis is not None and preis < prev_preis  # Fix 1
 
     # BUY: Preis fällt auf ein Level
-    for key, level in buy_levels.items():
-        buy_price = level["buy_price"]
+    if falling:
+        for key, lv in sorted(levels.items(), key=lambda x: x[1]["buy"], reverse=True):
+            if not lv["filled"] and abs(preis - lv["buy"]) / lv["buy"] <= BUY_TOL:
+                log(f"🟢 BUY @ {fmt(lv['buy'])} | TP: {fmt(lv['sell'])} | Preis fällt ↓", G)
+                ok = place_order(True, lv["buy"])
+                if ok is True:
+                    lv["filled"] = True
+                    total_size   = round(total_size + ORDER_SIZE, 4)
+                    time.sleep(2)
+                    break  # Fix 9: Break nur bei Erfolg
+                elif ok is False:
+                    break  # Fehler — warte nächsten Tick
 
-        # Noch nicht gekauft und Preis ist am Level
-        if not level["filled"] and abs(preis - buy_price) / buy_price <= 0.002:
-            log(f"🟢 BUY @ {fmt(buy_price)} | Verkaufe bei {fmt(level['sell_price'])}", G)
-            ok = place_order(True, buy_price, size=ORDER_SIZE)
-            if ok:
-                level["filled"] = True
-                total_size += ORDER_SIZE
-                save_state()
-                time.sleep(2)  # Kurz warten zwischen Orders
-            break  # Nur ein Buy pro Tick
-
-    # SELL: Preis steigt auf einen Verkaufslevel
-    for key, level in list(buy_levels.items()):
-        if level["filled"] and preis >= level["sell_price"] * 0.999:
-            log(f"🔴 SELL @ {fmt(level['sell_price'])} | Gekauft @ {fmt(level['buy_price'])}", R)
-            ok = place_order(False, level["sell_price"], size=ORDER_SIZE, reduce_only=True)
-            if ok:
-                pnl = GRID_PROFIT
+    # SELL: Preis steigt auf Verkaufslevel
+    for key, lv in sorted(levels.items(), key=lambda x: x[1]["sell"]):
+        if lv["filled"] and preis >= lv["sell"] * (1 - SELL_TOL):
+            log(f"🔴 SELL @ {fmt(lv['sell'])} | Gekauft @ {fmt(lv['buy'])}", R)
+            ok = place_order(False, lv["sell"], reduce_only=True)
+            if ok is True:
+                pnl        = GRID_PROFIT
                 total_pnl += pnl
-                wins += 1
-                total_size -= ORDER_SIZE
-                if total_size < 0: total_size = 0
-                level["filled"] = False  # Level wieder verfügbar für nächsten Kauf
+                wins      += 1
+                total_size = max(0.0, round(total_size - ORDER_SIZE, 4))
+                lv["filled"] = False
                 log(f"✅ +{pnl}% | Total: {total_pnl:+.2f}% | {wins} Wins | Pos: {total_size:.4f} BTC", G)
-                save_state()
                 time.sleep(2)
-            break  # Nur ein Sell pro Tick
+                break  # Fix 9: Break bei Erfolg
+            elif ok == "RESET":
+                # Fix 3: Code 2064 — Position nicht auf Nado
+                lv["filled"] = False
+                total_size   = max(0.0, round(total_size - ORDER_SIZE, 4))
+                break
+            else:
+                break  # Anderer Fehler — warte nächsten Tick
 
 
 # ─── HAUPT LOOP ───────────────────────────────────────────
 
 def loop():
-    global buy_levels, total_size
+    global prev_preis, total_size, levels
     tick = 0
-    log(f"Grid Bot | BTC | Step:{GRID_STEP}% | Profit:{GRID_PROFIT}% | {'DRY RUN' if DRY_RUN else 'LIVE'}", C)
+    log(f"Grid Bot | Step:{GRID_STEP}% | Profit:{GRID_PROFIT}% | {'DRY RUN' if DRY_RUN else 'LIVE'}", C)
+
+    # Beim Start: echte Nado Position holen
+    log("Prüfe Nado Position...", C)
+    preis_start = get_preis()
+    if preis_start:
+        setup_grid(preis_start)
+        sync_nado(preis_start)
 
     while True:
         try:
@@ -268,39 +296,37 @@ def loop():
                 log("Kein Preis", Y)
                 time.sleep(INTERVAL); continue
 
+            # Sync alle 2 Ticks (Fix 13: ~60 Sek)
+            if tick % SYNC_EVERY == 0:
+                sync_nado(preis)
+
             # Grid neu aufbauen wenn:
-            # 1. Noch kein Grid vorhanden
-            # 2. Preis zu weit nach oben (alle verkauft, neu starten)
-            if not buy_levels:
-                log(f"Grid wird aufgebaut @ {fmt(preis)}", Y)
+            # A) Kein Grid vorhanden
+            # B) Preis zu weit über allen Levels UND keine offene Position (Fix 4)
+            if not levels:
                 setup_grid(preis)
-
-            # Nur neu aufbauen wenn Preis ÜBER allen Buy Levels ist
-            # Das bedeutet alle Positionen wurden profitabel geschlossen
-            if buy_levels and wins > 0:
-                highest_buy = max(float(k) for k in buy_levels.keys())
-                if preis > highest_buy * 1.005 and total_size == 0:
-                    log(f"Alle Levels profitabel geschlossen! Neu aufbauen @ {fmt(preis)}", Y)
+            else:
+                highest_buy = max(v["buy"] for v in levels.values())
+                no_filled   = not any(v["filled"] for v in levels.values())
+                if preis > highest_buy * 1.005 and no_filled:
+                    log(f"Alle Levels geschlossen — Grid neu @ {fmt(preis)}", Y)
                     setup_grid(preis)
-
-            # Sync mit Nado alle 5 Ticks
-            if tick % 5 == 0:
-                sync_mit_nado()
 
             # Grid prüfen
             check_grid(preis)
+            prev_preis = preis  # Fix 1: Richtung merken
 
-            # Status
-            if tick % 3 == 0:
-                filled = sum(1 for v in buy_levels.values() if v["filled"])
-                log(f"BTC {fmt(preis)} | Offen:{filled}/{GRID_LEVELS} | Pos:{total_size:.4f} BTC | Wins:{wins} | P&L:{total_pnl:+.2f}%")
+            # Status anzeigen
+            if tick % 2 == 0:
+                filled = sum(1 for v in levels.values() if v["filled"])
+                log(f"BTC {fmt(preis)} | Offen:{filled} | Pos:{total_size:.4f} BTC | Wins:{wins} | P&L:{total_pnl:+.2f}%")
 
             time.sleep(INTERVAL)
 
         except KeyboardInterrupt:
             log("Bot gestoppt.", Y)
             if total_size > 0:
-                log(f"⚠️ Offene Position: {total_size:.4f} BTC — manuell auf app.nado.xyz schließen!", R)
+                log(f"⚠️ {total_size:.4f} BTC offen — manuell auf app.nado.xyz schließen!", R)
             break
         except Exception as e:
             log(f"Fehler: {e}", R)
@@ -313,15 +339,12 @@ def main():
     print(f"  ║   Kaufe günstig, verkaufe teurer         ║")
     print(f"  ╚══════════════════════════════════════════╝{X}\n")
     print(f"  Wallet:      {WALLET_ADDR[:12]}...{WALLET_ADDR[-6:]}")
-    print(f"  Grid Step:   {GRID_STEP}% zwischen Levels")
-    print(f"  Grid Levels: {GRID_LEVELS}")
+    print(f"  Grid Step:   {GRID_STEP}% | Levels: {GRID_LEVELS}")
     print(f"  Profit:      +{GRID_PROFIT}% pro Level")
     print(f"  Order Size:  {ORDER_SIZE} BTC")
+    print(f"  Buy Tol:     {BUY_TOL*100}% | Sell Tol: {SELL_TOL*100}%")
     modus = f"{Y}DRY RUN{X}" if DRY_RUN else f"{R}{B}LIVE{X}"
     print(f"  Modus:       {modus}\n")
-    load_state()
-    log("Synchronisiere mit Nado...", C)
-    sync_mit_nado()
     loop()
 
 
