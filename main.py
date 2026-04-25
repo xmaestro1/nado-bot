@@ -26,7 +26,7 @@ except:
 # ═══════════════════════════════════════════════════════════
 #  EINSTELLUNGEN
 # ═══════════════════════════════════════════════════════════
-WALLET_ADDR  = "0xc15263578ce7fd6290f56Ab78a23D3b6C653B28C"
+WALLET_ADDR  = "0x14A26C3F3fF2C7A5bC4a1E5E5B15972628288ab7"
 SIGNER_KEY   = "0xf7bbe14bbca148872730e063ca969d37f2d7006b22e4486877adaef9206192f9"
 
 PRODUCT_ID   = 2
