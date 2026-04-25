@@ -27,7 +27,7 @@ except:
 #  EINSTELLUNGEN
 # ═══════════════════════════════════════════════════════════
 WALLET_ADDR  = "0xc15263578ce7fd6290f56Ab78a23D3b6C653B28C"
-SIGNER_KEY   = "0x8097b0ec439aa91bd4f3c3ea79735be6688ce00589bbcd0e3dea2ab596580a4d"
+SIGNER_KEY   = "0xf7bbe14bbca148872730e063ca969d37f2d7006b22e4486877adaef9206192f9"
 
 PRODUCT_ID   = 2
 CHAIN_ID     = 57073
