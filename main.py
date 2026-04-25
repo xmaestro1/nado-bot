@@ -40,7 +40,7 @@ GRID_LEVELS  = 5        # Anzahl Buy Levels
 GRID_STEP    = 0.4      # % Abstand zwischen Levels
 GRID_PROFIT  = 0.4      # % Gewinn pro Level
 INTERVAL     = 30
-DRY_RUN      = True
+DRY_RUN      = False
 STATE_FILE   = "grid_state.json"
 # ═══════════════════════════════════════════════════════════
 
