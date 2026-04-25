@@ -44,7 +44,7 @@ CHAIN_ID     = 57073
 GATEWAY      = "https://gateway.prod.nado.xyz/v1"
 HEADERS      = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0015   # BTC pro Grid Level
+ORDER_SIZE   = 0.0032   # BTC pro Grid Level
 GRID_LEVELS  = 5        # Anzahl Buy Levels
 GRID_STEP    = 0.4      # % Abstand zwischen Levels
 GRID_PROFIT  = 0.4      # % Gewinn pro Level
