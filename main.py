@@ -34,7 +34,7 @@ GRID_PROFIT = 0.4     # % Gewinn pro Level
 BUY_TOL     = 0.004   # 0.4% Toleranz für Buy Level
 SELL_TOL    = 0.002   # 0.2% Toleranz für Sell Level
 INTERVAL    = 30      # Sekunden
-DRY_RUN     = False
+DRY_RUN     = True
 # ═══════════════════════════════════════════════════════════
 
 # State
