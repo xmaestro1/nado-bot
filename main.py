@@ -35,8 +35,8 @@ HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
 ORDER_SIZE  = 0.0015   # BTC pro Level
 GRID_LEVELS = 5        # Anzahl Levels
-GRID_STEP   = 0.2      # % Abstand zwischen Levels
-GRID_PROFIT = 0.2      # % Gewinn pro Level
+GRID_STEP   = 0.4      # % Abstand zwischen Levels
+GRID_PROFIT = 0.4      # % Gewinn pro Level
 SL_PCT      = 1.0      # % unter letztem Level → SL auslösen
 RSI_ENTRY   = 40       # RSI muss über diesem Wert sein für Wiedereinstieg
 SYNC_WAIT   = 180      # Sekunden nach Order kein Sync
@@ -258,7 +258,7 @@ def sell(price, size):
 def build_grid(preis):
     global grid
     grid = []
-    for i in range(0, GRID_LEVELS):
+    for i in range(1, GRID_LEVELS + 1):
         buy_p  = round(preis * (1 - i * GRID_STEP / 100))
         sell_p = round(buy_p  * (1 + GRID_PROFIT / 100))
         grid.append({
@@ -307,12 +307,15 @@ def sync_nado(preis):
             lv["filled"]   = False
             lv["bought_at"] = 0.0
     elif nado < bot:
-        # Eine Position wurde extern geschlossen
+        # Nado hat weniger — State anpassen
+        diff = max(1, round((bot - nado) / ORDER_SIZE))
+        count = 0
         for lv in reversed(grid):
-            if lv["filled"]:
+            if lv["filled"] and count < diff:
                 lv["filled"]   = False
                 lv["bought_at"] = 0.0
-                break
+                count += 1
+    # Wenn Nado mehr hat als Bot — ignorieren
 
 
 # ─── HAUPT LOOP ───────────────────────────────────────────
@@ -364,7 +367,7 @@ def loop():
             # ── ZUSTAND: GRID ─────────────────────────────
 
             # Grid neu aufbauen nur wenn Preis ÜBER dem höchsten Level ist (BTC stieg über alle Levels)
-            if filled_count() == 0 and grid and preis > grid[0]["buy_price"] * 1.01 and wins > 0:
+            if filled_count() == 0 and grid and preis > grid[0]["buy_price"] * 1.002:
                 log(f"Alle Levels verkauft — neues Grid @ {fmt(preis)}", C)
                 build_grid(preis)
 
