@@ -33,7 +33,7 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE  = 0.0030   # BTC pro Level
+ORDER_SIZE  = 0.0015   # BTC pro Level
 GRID_LEVELS = 5        # Anzahl Levels
 GRID_STEP   = 0.4      # % Abstand zwischen Levels
 GRID_PROFIT = 0.4      # % Gewinn pro Level
@@ -41,7 +41,7 @@ SL_PCT      = 1.0      # % unter letztem Level → SL auslösen
 RSI_ENTRY   = 40       # RSI muss über diesem Wert sein für Wiedereinstieg
 SYNC_WAIT   = 180      # Sekunden nach Order kein Sync
 INTERVAL    = 30       # Sekunden pro Tick
-DRY_RUN     = True
+DRY_RUN     = False
 # ═══════════════════════════════════════════════════════════
 
 # Zustände
@@ -274,7 +274,7 @@ def build_grid(preis):
 
 def sl_auslösen(preis):
     """Schließt alle offenen Positionen mit einer einzigen Order."""
-    global zustand
+    global zustand, wins, total_pnl
     n = filled_count()
     if n == 0: return
     size = round(n * ORDER_SIZE, 4)
@@ -318,7 +318,7 @@ def sync_nado(preis):
 # ─── HAUPT LOOP ───────────────────────────────────────────
 
 def loop():
-    global prev_preis, zustand, just_bought
+    global prev_preis, zustand, just_bought, wins, total_pnl
 
     tick = 0
     log(f"Bot | Grid+SL+Signal | DRY={'JA' if DRY_RUN else 'NEIN'}", C)
@@ -363,8 +363,8 @@ def loop():
 
             # ── ZUSTAND: GRID ─────────────────────────────
 
-            # Grid neu aufbauen wenn alle Levels verkauft und BTC über Grid gestiegen
-            if filled_count() == 0 and grid and preis > grid[0]["buy_price"] * 1.001:
+            # Grid neu aufbauen nur wenn Preis ÜBER dem höchsten Level ist (BTC stieg über alle Levels)
+            if filled_count() == 0 and grid and preis > grid[0]["buy_price"] * 1.01 and wins > 0:
                 log(f"Alle Levels verkauft — neues Grid @ {fmt(preis)}", C)
                 build_grid(preis)
 
