@@ -258,7 +258,7 @@ def sell(price, size):
 def build_grid(preis):
     global grid
     grid = []
-    for i in range(1, GRID_LEVELS + 1):
+    for i in range(0, GRID_LEVELS):
         buy_p  = round(preis * (1 - i * GRID_STEP / 100))
         sell_p = round(buy_p  * (1 + GRID_PROFIT / 100))
         grid.append({
