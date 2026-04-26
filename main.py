@@ -41,7 +41,7 @@ SL_PCT      = 1.0      # % unter letztem Level → SL auslösen
 RSI_ENTRY   = 40       # RSI muss über diesem Wert sein für Wiedereinstieg
 SYNC_WAIT   = 180      # Sekunden nach Order kein Sync
 INTERVAL    = 30       # Sekunden pro Tick
-DRY_RUN     = False
+DRY_RUN     = True
 # ═══════════════════════════════════════════════════════════
 
 # Zustände
