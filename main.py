@@ -35,8 +35,8 @@ HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
 ORDER_SIZE  = 0.0015   # BTC pro Level
 GRID_LEVELS = 5        # Anzahl Levels
-GRID_STEP   = 0.4      # % Abstand zwischen Levels
-GRID_PROFIT = 0.4      # % Gewinn pro Level
+GRID_STEP   = 0.2      # % Abstand zwischen Levels
+GRID_PROFIT = 0.2      # % Gewinn pro Level
 SL_PCT      = 1.0      # % unter letztem Level → SL auslösen
 RSI_ENTRY   = 40       # RSI muss über diesem Wert sein für Wiedereinstieg
 SYNC_WAIT   = 180      # Sekunden nach Order kein Sync
