@@ -1,13 +1,16 @@
 """
-Nado.xyz Grid Trading Bot — Final
-===================================
-Strategie:
-  - Grid: kaufe günstig, verkaufe teurer
-  - SL: alle Positionen schließen wenn Markt stark fällt
-  - Wiedereinstieg: RSI > 40 UND EMA9 > EMA21 (5-Min)
+Nado.xyz Grid Trading Bot — Long + Short
+==========================================
+LONG Grid: preis fällt → kaufen (5 levels), preis steigt → verkaufen (5 levels)
+SHORT Grid: preis steigt → shorten (5 levels), preis fällt → zurückkaufen (5 levels)
 
-Einrichten:
-  SIGNER_KEY = 1-Click Trading Key (app.nado.xyz → Settings)
+Start:     4/7 Indikatoren gleiche Richtung → Grid starten
+Wechsel:   Alle 7 Indikatoren andere Richtung → Grid schließen + neue Richtung
+SL:        Alle 5 Levels voll + 1% weiter → alles schließen
+
+7 Indikatoren: RSI, MACD, EMA9/21, Bollinger Bands, VWAP, Stochastic RSI, OBV
+
+Einrichten: SIGNER_KEY = 1-Click Trading Key (app.nado.xyz → Settings)
 """
 
 import time, random, requests, sys, urllib3
@@ -33,29 +36,25 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE  = 0.0015   # BTC pro Level
-GRID_LEVELS = 5        # Anzahl Levels
-GRID_STEP   = 0.2      # % Abstand zwischen Levels
-GRID_PROFIT = 0.2      # % Gewinn pro Level
-SL_PCT      = 1.0      # % unter letztem Level → SL auslösen
-RSI_ENTRY   = 40       # RSI muss über diesem Wert sein für Wiedereinstieg
-SYNC_WAIT   = 180      # Sekunden nach Order kein Sync
-INTERVAL    = 30       # Sekunden pro Tick
-DRY_RUN     = False
+ORDER_SIZE   = 0.0015  # BTC pro Level
+GRID_LEVELS  = 5       # Anzahl Levels
+GRID_STEP    = 0.2     # % Abstand zwischen Levels
+GRID_PROFIT  = 0.2     # % Gewinn pro Level
+SL_PCT       = 1.0     # % außerhalb letztem Level → SL
+MIN_SIGNAL   = 4       # Min Indikatoren für ersten Start
+SYNC_WAIT    = 180     # Sek nach Order kein Sync
+INTERVAL     = 30      # Sek pro Tick
+DRY_RUN      = False
 # ═══════════════════════════════════════════════════════════
 
-# Zustände
-ZUSTAND_GRID    = "GRID"    # Grid läuft normal
-ZUSTAND_WARTEN  = "WARTEN"  # Nach SL, warte auf Signal
-
-grid          = []     # Liste: {buy_price, sell_price, filled, bought_at}
-zustand       = ZUSTAND_GRID
+# State
+grid_mode     = None    # "LONG" oder "SHORT"
+grid          = []      # [{entry_price, exit_price, filled, open_time}]
 wins          = 0
 total_pnl     = 0.0
 prev_preis    = None
-last_order_t  = 0.0    # Zeit der letzten Order (für Sync-Delay)
-grid_built_at = 0.0    # Zeit des letzten Grid-Aufbaus
-just_bought   = False  # Verhindert Sell im gleichen Tick wie Buy
+last_order_t  = 0.0
+just_acted    = False   # Verhindert Buy+Sell im gleichen Tick
 
 
 def ts():
@@ -72,8 +71,17 @@ def fmt(x):
 def filled_count():
     return sum(1 for lv in grid if lv["filled"])
 
-def total_size():
-    return round(filled_count() * ORDER_SIZE, 4)
+def total_long_size():
+    """Gesamte LONG Position in BTC."""
+    if grid_mode == "LONG":
+        return round(filled_count() * ORDER_SIZE, 4)
+    return 0.0
+
+def total_short_size():
+    """Gesamte SHORT Position in BTC."""
+    if grid_mode == "SHORT":
+        return round(filled_count() * ORDER_SIZE, 4)
+    return 0.0
 
 
 # ─── API ──────────────────────────────────────────────────
@@ -95,25 +103,31 @@ def get_preis():
     return None
 
 
-def get_kerzen():
-    """Holt 5-Min Kerzen vom Archive (älteste zuerst)."""
+def get_kerzen(limit=100):
+    """5-Min Kerzen, älteste zuerst, mit open/high/low/close/volume."""
     try:
         r = requests.post(
             ARCHIVE,
-            json={"candlesticks": {"product_id": PRODUCT_ID, "granularity": 300, "limit": 60}},
+            json={"candlesticks": {"product_id": PRODUCT_ID, "granularity": 300, "limit": limit}},
             headers=HEADERS, timeout=15, verify=False
         )
         cs = r.json().get("candlesticks", [])
         if not cs: return None
-        candles = [{"c": float(c.get("close_x18", 0)) / 1e18} for c in cs]
-        return list(reversed(candles))  # älteste zuerst
+        candles = [{
+            "o": float(c.get("open_x18",  0)) / 1e18,
+            "h": float(c.get("high_x18",  0)) / 1e18,
+            "l": float(c.get("low_x18",   0)) / 1e18,
+            "c": float(c.get("close_x18", 0)) / 1e18,
+            "v": float(c.get("volume",    0)) / 1e18,
+        } for c in cs]
+        return list(reversed(candles))  # älteste zuerst, neueste zuletzt
     except Exception as e:
         log(f"Kerzen Fehler: {e}", Y)
     return None
 
 
-def get_nado_size():
-    """Echte BTC Position von Nado."""
+def get_nado_position():
+    """Echte Position von Nado: positiv=LONG, negativ=SHORT, 0=keine."""
     try:
         r = requests.get(
             f"{GATEWAY}/query?type=subaccount_info&subaccount={SUBACCOUNT}",
@@ -123,7 +137,7 @@ def get_nado_size():
         data = r.json().get("data", {})
         for pb in data.get("perp_balances", []):
             if pb.get("product_id") == PRODUCT_ID:
-                return max(0.0, float(pb["balance"]["amount"]) / 1e18)
+                return float(pb["balance"]["amount"]) / 1e18
     except Exception as e:
         log(f"Nado API Fehler: {e}", Y)
     return None
@@ -155,21 +169,126 @@ def calc_rsi(closes, n=14):
     return 100 if al == 0 else 100 - (100 / (1 + ag / al))
 
 
-def signal_wiedereinstieg():
+def calc_macd(closes):
+    """MACD Signal: positiv=LONG, negativ=SHORT."""
+    if len(closes) < 26: return None
+    e12 = calc_ema(closes, 12)
+    e26 = calc_ema(closes, 26)
+    if e12 is None or e26 is None: return None
+    macd_line = e12 - e26
+    # Signal line = EMA9 von MACD
+    macd_vals = []
+    for i in range(26, len(closes) + 1):
+        e12i = calc_ema(closes[:i], 12)
+        e26i = calc_ema(closes[:i], 26)
+        if e12i and e26i: macd_vals.append(e12i - e26i)
+    if len(macd_vals) < 9: return None
+    signal = calc_ema(macd_vals, 9)
+    if signal is None: return None
+    return macd_line - signal  # positiv=LONG, negativ=SHORT
+
+
+def calc_bb(closes, n=20):
+    """Bollinger Bands: gibt position zurück. >0=über Mitte=bullish, <0=unter Mitte=bearish."""
+    if len(closes) < n: return None
+    sma = sum(closes[-n:]) / n
+    std = (sum((x - sma) ** 2 for x in closes[-n:]) / n) ** 0.5
+    upper = sma + 2 * std
+    lower = sma - 2 * std
+    cur = closes[-1]
+    # Normalisiert: +1=über Mitte, -1=unter Mitte
+    mid = (upper + lower) / 2
+    return cur - mid  # positiv=über Mitte=bullish
+
+
+def calc_vwap(candles):
+    """VWAP: Preis über VWAP=bullish, darunter=bearish."""
+    if not candles: return None
+    tvp = sum(c["v"] * (c["h"] + c["l"] + c["c"]) / 3 for c in candles)
+    tv  = sum(c["v"] for c in candles)
+    if tv == 0: return None
+    vwap = tvp / tv
+    return candles[-1]["c"] - vwap  # positiv=über VWAP=bullish
+
+
+def calc_stoch_rsi(closes, n=14, k=3):
+    """Stochastic RSI: >0.5=bullish, <0.5=bearish."""
+    if len(closes) < n * 2: return None
+    rsi_vals = []
+    for i in range(n, len(closes) + 1):
+        r = calc_rsi(closes[:i], n)
+        if r is not None: rsi_vals.append(r)
+    if len(rsi_vals) < n: return None
+    recent = rsi_vals[-n:]
+    low_r  = min(recent)
+    high_r = max(recent)
+    if high_r == low_r: return 0.5
+    stoch = (rsi_vals[-1] - low_r) / (high_r - low_r)
+    return stoch - 0.5  # positiv=bullish, negativ=bearish
+
+
+def calc_obv(candles):
+    """On-Balance Volume: steigend=bullish, fallend=bearish."""
+    if len(candles) < 2: return None
+    obv = 0.0
+    for i in range(1, len(candles)):
+        if candles[i]["c"] > candles[i-1]["c"]:
+            obv += candles[i]["v"]
+        elif candles[i]["c"] < candles[i-1]["c"]:
+            obv -= candles[i]["v"]
+    # OBV Trend: vergleiche letzten mit vorherigem
+    obv_prev = 0.0
+    for i in range(1, len(candles) - 1):
+        if candles[i]["c"] > candles[i-1]["c"]:
+            obv_prev += candles[i]["v"]
+        elif candles[i]["c"] < candles[i-1]["c"]:
+            obv_prev -= candles[i]["v"]
+    return obv - obv_prev  # positiv=steigend=bullish
+
+
+def get_signal(candles):
     """
-    Prüft ob Wiedereinstieg erlaubt ist.
-    Bedingung: RSI > 40 UND EMA9 > EMA21 auf 5-Min Kerzen.
+    Berechnet alle 7 Indikatoren.
+    Gibt zurück: (long_count, short_count, details)
     """
-    cs = get_kerzen()
-    if not cs or len(cs) < 25: return False
-    closes = [c["c"] for c in cs]
-    rsi  = calc_rsi(closes)
-    e9   = calc_ema(closes, 9)
-    e21  = calc_ema(closes, 21)
-    if rsi is None or e9 is None or e21 is None: return False
-    ok = rsi > RSI_ENTRY and e9 > e21
-    log(f"Signal Check: RSI={rsi:.1f} (>{RSI_ENTRY}?) EMA9={fmt(e9)} EMA21={fmt(e21)} ({'✅ JA' if ok else '❌ NEIN'})", M)
-    return ok
+    if not candles or len(candles) < 30:
+        return 0, 0, {}
+
+    closes = [c["c"] for c in candles]
+
+    # Alle 7 berechnen
+    rsi      = calc_rsi(closes)
+    macd     = calc_macd(closes)
+    ema_diff = (calc_ema(closes, 9) or 0) - (calc_ema(closes, 21) or 0)
+    bb       = calc_bb(closes)
+    vwap     = calc_vwap(candles)
+    stoch    = calc_stoch_rsi(closes)
+    obv      = calc_obv(candles)
+
+    if any(x is None for x in [rsi, macd, bb, vwap, stoch, obv]):
+        return 0, 0, {}
+
+    # Jeder Indikator gibt LONG oder SHORT
+    signals = {
+        "RSI":       "LONG" if rsi > 50      else "SHORT",
+        "MACD":      "LONG" if macd > 0      else "SHORT",
+        "EMA":       "LONG" if ema_diff > 0  else "SHORT",
+        "BB":        "LONG" if bb > 0        else "SHORT",
+        "VWAP":      "LONG" if vwap > 0      else "SHORT",
+        "StochRSI":  "LONG" if stoch > 0     else "SHORT",
+        "OBV":       "LONG" if obv > 0       else "SHORT",
+    }
+
+    long_count  = sum(1 for v in signals.values() if v == "LONG")
+    short_count = sum(1 for v in signals.values() if v == "SHORT")
+
+    details = {
+        "RSI": round(rsi, 1),
+        "L": long_count,
+        "S": short_count,
+    }
+
+    return long_count, short_count, details
 
 
 # ─── ORDER ────────────────────────────────────────────────
@@ -179,15 +298,16 @@ def sender_hex():
     return "0x" + (ab + b"default".ljust(12, b"\x00")).hex()
 
 
-def _send_order(is_buy, price, size):
+def place_order(is_buy, price, size):
     """
-    Interne Order-Funktion.
-    is_buy=True  → positive Menge → LONG öffnen
-    is_buy=False → negative Menge → LONG schließen
+    is_buy=True  → positive Menge → LONG öffnen ODER SHORT schließen
+    is_buy=False → negative Menge → SHORT öffnen ODER LONG schließen
     Kein reduce_only. Preis mit 0.2% Slippage.
     """
+    global last_order_t
     if DRY_RUN:
         log(f"[DRY] {'BUY' if is_buy else 'SELL'} {size} BTC @ {fmt(price)}", Y)
+        last_order_t = time.time()
         return True
     try:
         from eth_account import Account
@@ -230,126 +350,142 @@ def _send_order(is_buy, price, size):
         d = r.json()
         if d.get("status") == "success":
             log("✅ Order OK!", G)
+            last_order_t = time.time()
             return True
-        log(f"❌ {d.get('error','')} (Code:{d.get('error_code','')})", R)
+        code = d.get("error_code", 0)
+        err  = d.get("error", "")
+        if code == 2006:
+            log("⚠️ Kein Kapital (2064) — Level überspringen", Y)
+            return "NO_MARGIN"
+        log(f"❌ {err} (Code:{code})", R)
         return False
     except Exception as e:
         log(f"Order Exception: {e}", R)
         return False
 
 
-def buy(price):
-    """Öffnet eine LONG Position (ORDER_SIZE BTC)."""
-    global last_order_t
-    ok = _send_order(True, price, ORDER_SIZE)
-    if ok: last_order_t = time.time()
-    return ok
+# ─── GRID AUFBAUEN ────────────────────────────────────────
 
-
-def sell(price, size):
-    """Schließt eine LONG Position (size BTC)."""
-    global last_order_t
-    ok = _send_order(False, price, size)
-    if ok: last_order_t = time.time()
-    return ok
-
-
-# ─── GRID ─────────────────────────────────────────────────
-
-def build_grid(preis):
-    global grid, grid_built_at
+def build_grid(preis, modus):
+    """
+    Baut Grid auf.
+    LONG: 5 Levels UNTER aktuellem Preis
+    SHORT: 5 Levels ÜBER aktuellem Preis
+    Sofort ersten Trade beim Start.
+    """
+    global grid, grid_mode, wins, total_pnl
+    grid_mode = modus
     grid = []
+
     for i in range(1, GRID_LEVELS + 1):
-        buy_p  = round(preis * (1 - i * GRID_STEP / 100))
-        sell_p = round(buy_p  * (1 + GRID_PROFIT / 100))
+        if modus == "LONG":
+            entry_p = round(preis * (1 - i * GRID_STEP / 100))
+            exit_p  = round(entry_p * (1 + GRID_PROFIT / 100))
+        else:  # SHORT
+            entry_p = round(preis * (1 + i * GRID_STEP / 100))
+            exit_p  = round(entry_p * (1 - GRID_PROFIT / 100))
         grid.append({
-            "buy_price":  buy_p,
-            "sell_price": sell_p,
-            "filled":     False,
-            "bought_at":  0.0,
+            "entry_price": entry_p,
+            "exit_price":  exit_p,
+            "filled":      False,
+            "open_time":   0.0,
         })
-    lvls = " | ".join(fmt(lv["buy_price"]) for lv in grid)
-    log(f"Grid @ {fmt(preis)} | Levels: {lvls}", C)
-    grid_built_at = time.time()
-    log(f"SL wenn BTC unter {fmt(grid[-1]['buy_price'] * (1 - SL_PCT/100))}", Y)
-    # Sofort kaufen beim Grid-Aufbau
-    log(f"🟢 Sofortkauf @ {fmt(preis)}", G)
-    ok = buy(preis)
-    if ok:
-        sell_p = round(preis * (1 + GRID_PROFIT / 100))
-        grid.insert(0, {"buy_price": round(preis), "sell_price": sell_p, "filled": True, "bought_at": time.time()})
+
+    lvls = " | ".join(fmt(lv["entry_price"]) for lv in grid)
+    log(f"{G if modus=='LONG' else R}{modus} Grid @ {fmt(preis)} | Levels: {lvls}{X}", C)
+
+    if modus == "LONG":
+        sl_p = grid[-1]["entry_price"] * (1 - SL_PCT / 100)
+    else:
+        sl_p = grid[-1]["entry_price"] * (1 + SL_PCT / 100)
+    log(f"SL @ {fmt(sl_p)}", Y)
+
+    # Sofort ersten Trade beim Start
+    log(f"{'🟢 LONG' if modus == 'LONG' else '🔴 SHORT'} Soforteinstieg @ {fmt(preis)}", G if modus == "LONG" else R)
+    is_buy = (modus == "LONG")
+    ok = place_order(is_buy, preis, ORDER_SIZE)
+    if ok is True:
+        exit_p = round(preis * (1 + GRID_PROFIT / 100)) if modus == "LONG" else round(preis * (1 - GRID_PROFIT / 100))
+        grid.insert(0, {
+            "entry_price": round(preis),
+            "exit_price":  exit_p,
+            "filled":      True,
+            "open_time":   time.time(),
+        })
 
 
-def sl_auslösen(preis):
-    """Schließt alle offenen Positionen mit einer einzigen Order."""
-    global zustand, wins, total_pnl
+def close_all(preis, reason=""):
+    """Schließt alle offenen Positionen auf einmal."""
+    global grid, grid_mode
     n = filled_count()
-    if n == 0: return
+    if n == 0:
+        grid = []
+        grid_mode = None
+        return
     size = round(n * ORDER_SIZE, 4)
-    verlust_pnl = sum(
-        (preis - lv["buy_price"]) / lv["buy_price"] * 100
-        for lv in grid if lv["filled"]
-    ) / n
-    log(f"⛔ STOP LOSS — {n} Levels ({size} BTC) | Verlust: {verlust_pnl:+.2f}%", R)
-    ok = sell(preis, size)
-    if ok or DRY_RUN:
-        for lv in grid:
-            lv["filled"]   = False
-            lv["bought_at"] = 0.0
-        zustand = ZUSTAND_WARTEN
-        log("Zustand: WARTEN auf Wiedereinstieg-Signal...", Y)
+    log(f"⛔ {reason} — Schließe {n} Levels ({size} BTC)", R)
+    # LONG schließen = SELL, SHORT schließen = BUY
+    is_buy = (grid_mode == "SHORT")
+    ok = place_order(is_buy, preis, size)
+    if ok is True or DRY_RUN:
+        grid = []
+        grid_mode = None
+        log("Alle Positionen geschlossen.", Y)
 
+
+# ─── SYNC ─────────────────────────────────────────────────
 
 def sync_nado(preis):
-    """Sync mit Nado API. Nur wenn keine Order zu kürzlich."""
+    """Prüft ob Bot-State mit Nado übereinstimmt."""
     if (time.time() - last_order_t) < SYNC_WAIT:
         return
-    nado = get_nado_size()
+    nado = get_nado_position()
     if nado is None: return
-    bot  = total_size()
-    if abs(nado - bot) < 0.0001: return
-    log(f"Sync: Bot={bot:.4f} | Nado={nado:.4f}", Y)
-    if nado == 0 and bot > 0:
-        log("Nado: keine Position — Grid zurücksetzen", Y)
-        for lv in grid:
-            lv["filled"]   = False
-            lv["bought_at"] = 0.0
-    elif nado < bot:
-        # Nado hat weniger — State anpassen
-        diff = max(1, round((bot - nado) / ORDER_SIZE))
-        count = 0
-        for lv in reversed(grid):
-            if lv["filled"] and count < diff:
-                lv["filled"]   = False
-                lv["bought_at"] = 0.0
-                count += 1
-    # Wenn Nado mehr hat als Bot — ignorieren
+
+    bot_long  = total_long_size()
+    bot_short = total_short_size()
+
+    # LONG Sync
+    if grid_mode == "LONG":
+        nado_size = max(0.0, nado)
+        if abs(nado_size - bot_long) > 0.0001:
+            log(f"Sync LONG: Bot={bot_long:.4f} | Nado={nado_size:.4f}", Y)
+            if nado_size == 0:
+                for lv in grid: lv["filled"] = False; lv["open_time"] = 0.0
+            elif nado_size < bot_long:
+                diff = max(1, round((bot_long - nado_size) / ORDER_SIZE))
+                count = 0
+                for lv in reversed(grid):
+                    if lv["filled"] and count < diff:
+                        lv["filled"] = False; lv["open_time"] = 0.0; count += 1
+
+    # SHORT Sync
+    elif grid_mode == "SHORT":
+        nado_size = max(0.0, -nado)  # SHORT ist negativ
+        if abs(nado_size - bot_short) > 0.0001:
+            log(f"Sync SHORT: Bot={bot_short:.4f} | Nado={nado_size:.4f}", Y)
+            if nado_size == 0:
+                for lv in grid: lv["filled"] = False; lv["open_time"] = 0.0
+            elif nado_size < bot_short:
+                diff = max(1, round((bot_short - nado_size) / ORDER_SIZE))
+                count = 0
+                for lv in reversed(grid):
+                    if lv["filled"] and count < diff:
+                        lv["filled"] = False; lv["open_time"] = 0.0; count += 1
 
 
 # ─── HAUPT LOOP ───────────────────────────────────────────
 
 def loop():
-    global prev_preis, zustand, just_bought, wins, total_pnl, grid_built_at
+    global prev_preis, just_acted, wins, total_pnl, grid_mode, grid
 
     tick = 0
-    log(f"Bot | Grid+SL+Signal | DRY={'JA' if DRY_RUN else 'NEIN'}", C)
-
-    # Beim Start Grid aufbauen
-    p = get_preis()
-    if p:
-        build_grid(p)
-        nado = get_nado_size()
-        if nado and nado > 0:
-            log(f"Bestehende Position: {nado:.4f} BTC erkannt", Y)
-            n = round(nado / ORDER_SIZE)
-            for i, lv in enumerate(grid[:n]):
-                lv["filled"]   = True
-                lv["bought_at"] = 0.0
+    log(f"Bot | LONG+SHORT Grid | 7 Indikatoren | {'DRY' if DRY_RUN else 'LIVE'}", C)
 
     while True:
         try:
-            tick       += 1
-            just_bought = False
+            tick      += 1
+            just_acted = False
 
             preis = get_preis()
             if not preis:
@@ -357,86 +493,167 @@ def loop():
                 time.sleep(INTERVAL)
                 continue
 
+            # Kerzen holen (für Indikatoren)
+            candles = get_kerzen(100)
+            if not candles:
+                log("Keine Kerzen — warte...", Y)
+                time.sleep(INTERVAL)
+                continue
+
+            # Indikatoren berechnen
+            long_c, short_c, details = get_signal(candles)
+
             # Sync alle 4 Ticks
-            if tick % 4 == 0:
+            if tick % 4 == 0 and grid_mode:
                 sync_nado(preis)
 
-            # ── ZUSTAND: WARTEN ───────────────────────────
-            if zustand == ZUSTAND_WARTEN:
-                log(f"BTC {fmt(preis)} | Warte auf Signal (RSI>{RSI_ENTRY} + EMA9>EMA21)...", Y)
-                if signal_wiedereinstieg():
-                    log("🚀 Signal erkannt! Neues Grid wird aufgebaut.", G)
-                    build_grid(preis)
-                    zustand = ZUSTAND_GRID
+            # ── KEIN AKTIVES GRID ─────────────────────────
+            if grid_mode is None:
+                if long_c >= MIN_SIGNAL and long_c > short_c:
+                    log(f"🎯 {long_c}/7 LONG Signal — LONG Grid starten", G)
+                    build_grid(preis, "LONG")
+                elif short_c >= MIN_SIGNAL and short_c > long_c:
+                    log(f"🎯 {short_c}/7 SHORT Signal — SHORT Grid starten", R)
+                    build_grid(preis, "SHORT")
+                else:
+                    if tick % 2 == 0:
+                        log(f"BTC {fmt(preis)} | L:{long_c}/7 S:{short_c}/7 RSI:{details.get('RSI','?')} | Warte auf Signal...", Y)
                 time.sleep(INTERVAL)
                 prev_preis = preis
                 continue
 
-            # ── ZUSTAND: GRID ─────────────────────────────
+            # ── AKTIVES GRID ──────────────────────────────
 
-            # Grid neu aufbauen nur wenn Preis ÜBER dem höchsten Level ist (BTC stieg über alle Levels)
-            # Nur neu aufbauen wenn ALLE levels verkauft wurden (min 1 win) UND preis deutlich über grid
-            filled_ever = any(lv["bought_at"] > 0 for lv in grid)
-            if filled_count() == 0 and filled_ever and preis > grid[0]["buy_price"] * 1.002:
-                log(f"Alle Levels verkauft — neues Grid @ {fmt(preis)}", C)
-                build_grid(preis)
+            # Richtungswechsel: alle 7 andere Richtung → Grid schließen
+            if grid_mode == "LONG" and short_c == 7:
+                log("🔄 Alle 7 Indikatoren SHORT → Grid schließen + SHORT starten", M)
+                close_all(preis, "RICHTUNGSWECHSEL")
+                build_grid(preis, "SHORT")
+                time.sleep(INTERVAL)
+                prev_preis = preis
+                continue
+            elif grid_mode == "SHORT" and long_c == 7:
+                log("🔄 Alle 7 Indikatoren LONG → Grid schließen + LONG starten", M)
+                close_all(preis, "RICHTUNGSWECHSEL")
+                build_grid(preis, "LONG")
+                time.sleep(INTERVAL)
+                prev_preis = preis
+                continue
 
-            # SL: alle Levels gefüllt UND Preis 1% unter letztem Level
+            # SL prüfen
             if filled_count() == GRID_LEVELS:
-                sl_preis = grid[-1]["buy_price"] * (1 - SL_PCT / 100)
-                if preis <= sl_preis:
-                    sl_auslösen(preis)
-                    time.sleep(INTERVAL)
-                    prev_preis = preis
-                    continue
+                if grid_mode == "LONG":
+                    sl_p = grid[-1]["entry_price"] * (1 - SL_PCT / 100)
+                    if preis <= sl_p:
+                        close_all(preis, "STOP LOSS")
+                        time.sleep(INTERVAL)
+                        prev_preis = preis
+                        continue
+                else:  # SHORT
+                    sl_p = grid[-1]["entry_price"] * (1 + SL_PCT / 100)
+                    if preis >= sl_p:
+                        close_all(preis, "STOP LOSS")
+                        time.sleep(INTERVAL)
+                        prev_preis = preis
+                        continue
 
+            # Grid neu aufbauen wenn alle Levels geschlossen + Preis über/unter Grid
+            filled_ever = any(lv["open_time"] > 0 for lv in grid)
+            if filled_count() == 0 and filled_ever:
+                if grid_mode == "LONG" and preis > grid[0]["entry_price"] * 1.002:
+                    log(f"LONG Grid abgeschlossen — neues Grid @ {fmt(preis)}", C)
+                    build_grid(preis, "LONG")
+                elif grid_mode == "SHORT" and preis < grid[0]["entry_price"] * 0.998:
+                    log(f"SHORT Grid abgeschlossen — neues Grid @ {fmt(preis)}", C)
+                    build_grid(preis, "SHORT")
+
+            rising  = prev_preis is not None and preis > prev_preis
             falling = prev_preis is not None and preis < prev_preis
 
-            # BUY: Preis fällt auf Level
-            if falling:
-                for lv in grid:
-                    if not lv["filled"] and preis <= lv["buy_price"] * 1.001:
-                        log(f"🟢 BUY @ {fmt(lv['buy_price'])} | TP: {fmt(lv['sell_price'])}", G)
-                        ok = buy(preis)
-                        if ok:
-                            lv["filled"]   = True
-                            lv["bought_at"] = time.time()
-                            just_bought    = True
-                        break  # 1 Buy pro Tick
+            # ── LONG GRID ─────────────────────────────────
+            if grid_mode == "LONG":
+                # BUY: preis fällt auf entry level
+                if falling:
+                    for lv in grid:
+                        if not lv["filled"] and preis <= lv["entry_price"] * 1.001:
+                            log(f"🟢 LONG BUY @ {fmt(lv['entry_price'])} | TP: {fmt(lv['exit_price'])}", G)
+                            ok = place_order(True, preis, ORDER_SIZE)
+                            if ok is True:
+                                lv["filled"]   = True
+                                lv["open_time"] = time.time()
+                                just_acted     = True
+                            elif ok == "NO_MARGIN":
+                                lv["filled"]   = True
+                                lv["open_time"] = -1
+                            break
 
-            # SELL: Preis steigt auf Sell Level (nicht im gleichen Tick wie Buy)
-            if not just_bought:
-                for lv in grid:
-                    if not lv["filled"]: continue
-                    if (time.time() - lv["bought_at"]) < 60: continue  # 60s warten
-                    if preis >= lv["sell_price"]:
-                        log(f"🔴 SELL @ {fmt(lv['sell_price'])} | Gekauft @ {fmt(lv['buy_price'])}", R)
-                        ok = sell(preis, ORDER_SIZE)
-                        if ok:
-                            lv["filled"]   = False
-                            lv["bought_at"] = 0.0
-                            total_pnl     += GRID_PROFIT
-                            wins          += 1
-                            log(f"✅ +{GRID_PROFIT}% | Total:{total_pnl:+.2f}% | {wins}W", G)
-                        break  # 1 Sell pro Tick
+                # SELL: preis steigt auf exit level
+                if not just_acted:
+                    for lv in grid:
+                        if not lv["filled"]: continue
+                        if lv["open_time"] < 0: continue  # NO_MARGIN Level
+                        if (time.time() - lv["open_time"]) < 60: continue
+                        if preis >= lv["exit_price"]:
+                            log(f"🔴 LONG SELL @ {fmt(lv['exit_price'])} | Einstieg: {fmt(lv['entry_price'])}", R)
+                            ok = place_order(False, preis, ORDER_SIZE)
+                            if ok is True:
+                                lv["filled"]   = False
+                                lv["open_time"] = 0.0
+                                total_pnl     += GRID_PROFIT
+                                wins          += 1
+                                just_acted    = True
+                                log(f"✅ +{GRID_PROFIT}% | Total:{total_pnl:+.2f}% | {wins}W", G)
+                            break
+
+            # ── SHORT GRID ────────────────────────────────
+            elif grid_mode == "SHORT":
+                # SHORT: preis steigt auf entry level
+                if rising:
+                    for lv in grid:
+                        if not lv["filled"] and preis >= lv["entry_price"] * 0.999:
+                            log(f"🔴 SHORT @ {fmt(lv['entry_price'])} | TP: {fmt(lv['exit_price'])}", R)
+                            ok = place_order(False, preis, ORDER_SIZE)
+                            if ok is True:
+                                lv["filled"]   = True
+                                lv["open_time"] = time.time()
+                                just_acted     = True
+                            elif ok == "NO_MARGIN":
+                                lv["filled"]   = True
+                                lv["open_time"] = -1
+                            break
+
+                # SHORT schließen: preis fällt auf exit level
+                if not just_acted:
+                    for lv in grid:
+                        if not lv["filled"]: continue
+                        if lv["open_time"] < 0: continue
+                        if (time.time() - lv["open_time"]) < 60: continue
+                        if preis <= lv["exit_price"]:
+                            log(f"🟢 SHORT CLOSE @ {fmt(lv['exit_price'])} | Einstieg: {fmt(lv['entry_price'])}", G)
+                            ok = place_order(True, preis, ORDER_SIZE)
+                            if ok is True:
+                                lv["filled"]   = False
+                                lv["open_time"] = 0.0
+                                total_pnl     += GRID_PROFIT
+                                wins          += 1
+                                just_acted    = True
+                                log(f"✅ +{GRID_PROFIT}% | Total:{total_pnl:+.2f}% | {wins}W", G)
+                            break
 
             prev_preis = preis
 
-            # Status anzeigen
+            # Status
             if tick % 2 == 0:
                 n = filled_count()
-                sl_info = ""
-                if n == GRID_LEVELS:
-                    sl_p = grid[-1]["buy_price"] * (1 - SL_PCT / 100)
-                    sl_info = f" | SL @ {fmt(sl_p)}"
-                log(f"BTC {fmt(preis)} | Offen:{n}/{GRID_LEVELS} | {wins}W | P&L:{total_pnl:+.2f}%{sl_info}")
+                modus_txt = f"{G}LONG{X}" if grid_mode == "LONG" else f"{R}SHORT{X}" if grid_mode == "SHORT" else "KEIN"
+                log(f"BTC {fmt(preis)} | {modus_txt} | Offen:{n}/{GRID_LEVELS} | L:{long_c}/7 S:{short_c}/7 | {wins}W P&L:{total_pnl:+.2f}%")
 
             time.sleep(INTERVAL)
 
         except KeyboardInterrupt:
             log("Bot gestoppt.", Y)
-            if total_size() > 0:
-                log(f"⚠️ {total_size():.4f} BTC offen — manuell auf app.nado.xyz schließen!", R)
+            if grid_mode and filled_count() > 0:
+                log(f"⚠️ {filled_count()} offene {grid_mode} Positionen — manuell auf app.nado.xyz schließen!", R)
             break
         except Exception as e:
             log(f"Fehler: {e}", R)
@@ -445,13 +662,14 @@ def loop():
 
 def main():
     print(f"\n{B}{C}  ╔══════════════════════════════════════════╗")
-    print(f"  ║      Nado.xyz — Grid + SL + Signal Bot   ║")
-    print(f"  ║   Kaufe günstig, verkaufe teurer         ║")
+    print(f"  ║   Nado.xyz — Long + Short Grid Bot       ║")
+    print(f"  ║   7 Indikatoren | SL | Auto-Richtung     ║")
     print(f"  ╚══════════════════════════════════════════╝{X}\n")
     print(f"  Wallet:    {WALLET_ADDR[:12]}...{WALLET_ADDR[-6:]}")
     print(f"  Step:      {GRID_STEP}% | Levels: {GRID_LEVELS} | Profit: +{GRID_PROFIT}%")
-    print(f"  SL:        {SL_PCT}% unter letztem Level")
-    print(f"  Einstieg:  RSI > {RSI_ENTRY} + EMA9 > EMA21")
+    print(f"  Start:     {MIN_SIGNAL}/7 Indikatoren gleiche Richtung")
+    print(f"  Wechsel:   7/7 Indikatoren andere Richtung")
+    print(f"  SL:        {SL_PCT}% außerhalb letztem Level")
     modus = f"{Y}DRY RUN{X}" if DRY_RUN else f"{R}{B}LIVE{X}"
     print(f"  Modus:     {modus}\n")
     loop()
