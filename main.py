@@ -566,6 +566,14 @@ def loop():
                 elif grid_mode == "SHORT" and preis < grid[0]["entry_price"] * 0.998:
                     log(f"SHORT Grid abgeschlossen — neues Grid @ {fmt(preis)}", C)
                     build_grid(preis, "SHORT")
+            # Grid neu aufbauen wenn Preis zu weit von allen Levels entfernt
+            if filled_count() == 0 and grid:
+                if grid_mode == "LONG" and preis < grid[-1]["entry_price"] * 0.995:
+                    log(f"BTC zu weit gefallen — LONG Grid neu @ {fmt(preis)}", Y)
+                    build_grid(preis, "LONG")
+                elif grid_mode == "SHORT" and preis > grid[-1]["entry_price"] * 1.005:
+                    log(f"BTC zu weit gestiegen — SHORT Grid neu @ {fmt(preis)}", Y)
+                    build_grid(preis, "SHORT")
 
             rising  = prev_preis is not None and preis > prev_preis
             falling = prev_preis is not None and preis < prev_preis
