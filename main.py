@@ -524,21 +524,20 @@ def loop():
 
             # ── AKTIVES GRID ──────────────────────────────
 
-            # Richtungswechsel: alle 7 andere Richtung → Grid schließen
-            if grid_mode == "LONG" and short_c == 7:
-                log("🔄 Alle 7 Indikatoren SHORT → Grid schließen + SHORT starten", M)
-                close_all(preis, "RICHTUNGSWECHSEL")
-                build_grid(preis, "SHORT")
-                time.sleep(INTERVAL)
-                prev_preis = preis
-                continue
-            elif grid_mode == "SHORT" and long_c == 7:
-                log("🔄 Alle 7 Indikatoren LONG → Grid schließen + LONG starten", M)
-                close_all(preis, "RICHTUNGSWECHSEL")
-                build_grid(preis, "LONG")
-                time.sleep(INTERVAL)
-                prev_preis = preis
-                continue
+            # Richtungswechsel: alle 7 andere Richtung → aber nur wenn KEINE offenen Positionen
+            if filled_count() == 0:
+                if grid_mode == "LONG" and short_c == 7:
+                    log("🔄 Alle 7 SHORT + keine offenen Positionen → SHORT Grid starten", M)
+                    build_grid(preis, "SHORT")
+                    time.sleep(INTERVAL)
+                    prev_preis = preis
+                    continue
+                elif grid_mode == "SHORT" and long_c == 7:
+                    log("🔄 Alle 7 LONG + keine offenen Positionen → LONG Grid starten", M)
+                    build_grid(preis, "LONG")
+                    time.sleep(INTERVAL)
+                    prev_preis = preis
+                    continue
 
             # SL prüfen
             if filled_count() == GRID_LEVELS:
