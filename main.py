@@ -36,7 +36,7 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0015  # BTC pro Level
+ORDER_SIZE   = 0.0025  # BTC pro Level
 GRID_LEVELS  = 5       # Anzahl Levels
 GRID_STEP    = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT  = 0.2     # % Gewinn pro Level
@@ -557,23 +557,13 @@ def loop():
                         prev_preis = preis
                         continue
 
-            # Grid neu aufbauen wenn alle Levels geschlossen + Preis über/unter Grid
-            filled_ever = any(lv["open_time"] > 0 for lv in grid)
-            if filled_count() == 0 and filled_ever:
-                if grid_mode == "LONG" and preis > grid[0]["entry_price"] * 1.002:
-                    log(f"LONG Grid abgeschlossen — neues Grid @ {fmt(preis)}", C)
-                    build_grid(preis, "LONG")
-                elif grid_mode == "SHORT" and preis < grid[0]["entry_price"] * 0.998:
-                    log(f"SHORT Grid abgeschlossen — neues Grid @ {fmt(preis)}", C)
-                    build_grid(preis, "SHORT")
-            # Grid neu aufbauen wenn Preis zu weit von allen Levels entfernt
-            if filled_count() == 0 and grid:
-                if grid_mode == "LONG" and preis < grid[-1]["entry_price"] * 0.995:
-                    log(f"BTC zu weit gefallen — LONG Grid neu @ {fmt(preis)}", Y)
-                    build_grid(preis, "LONG")
-                elif grid_mode == "SHORT" and preis > grid[-1]["entry_price"] * 1.005:
-                    log(f"BTC zu weit gestiegen — SHORT Grid neu @ {fmt(preis)}", Y)
-                    build_grid(preis, "SHORT")
+            # Sofort neu aufbauen wenn kein Trade offen
+            if filled_count() == 0 and grid_mode:
+                log(f"Kein offener Trade — Grid neu @ {fmt(preis)}", Y)
+                build_grid(preis, grid_mode)
+                time.sleep(INTERVAL)
+                prev_preis = preis
+                continue
 
             rising  = prev_preis is not None and preis > prev_preis
             falling = prev_preis is not None and preis < prev_preis
