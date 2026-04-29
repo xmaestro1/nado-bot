@@ -44,7 +44,7 @@ SL_PCT       = 1.0     # % außerhalb letztem Level → SL
 MIN_SIGNAL   = 4       # Min Indikatoren für ersten Start
 SYNC_WAIT    = 180     # Sek nach Order kein Sync
 INTERVAL     = 30      # Sek pro Tick
-DRY_RUN      = True
+DRY_RUN      = False
 # ═══════════════════════════════════════════════════════════
 
 # State
