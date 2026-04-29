@@ -36,7 +36,7 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0025  # BTC pro Level
+ORDER_SIZE   = 0.0015  # BTC pro Level
 GRID_LEVELS  = 5       # Anzahl Levels
 GRID_STEP    = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT  = 0.2     # % Gewinn pro Level
@@ -556,22 +556,31 @@ def loop():
                         prev_preis = preis
                         continue
 
-            # Neu aufbauen wenn kein Trade offen — aber erst Indikatoren prüfen (min 4/7)
-            if filled_count() == 0 and grid_mode:
-                if grid_mode == "LONG" and long_c >= MIN_SIGNAL:
-                    log(f"Kein offener Trade — Grid neu @ {fmt(preis)} ({long_c}/7 LONG)", Y)
-                    build_grid(preis, "LONG")
-                    time.sleep(INTERVAL)
-                    prev_preis = preis
-                    continue
-                elif grid_mode == "SHORT" and short_c >= MIN_SIGNAL:
-                    log(f"Kein offener Trade — Grid neu @ {fmt(preis)} ({short_c}/7 SHORT)", Y)
-                    build_grid(preis, "SHORT")
-                    time.sleep(INTERVAL)
-                    prev_preis = preis
-                    continue
-                else:
-                    log(f"Kein Signal für {grid_mode} ({long_c}/7 L {short_c}/7 S) — warte...", Y)
+            # Grid neu aufbauen NUR wenn Preis über alle LONG Levels gestiegen
+            # oder unter alle SHORT Levels gefallen ist — dann Signal-Check (4/7)
+            if grid and filled_count() == 0:
+                if grid_mode == "LONG":
+                    highest = max(lv["entry_price"] for lv in grid)
+                    if preis > highest * 1.002:
+                        if long_c >= MIN_SIGNAL:
+                            log(f"Preis über Grid — LONG Grid neu @ {fmt(preis)} ({long_c}/7)", Y)
+                            build_grid(preis, "LONG")
+                            time.sleep(INTERVAL)
+                            prev_preis = preis
+                            continue
+                        else:
+                            log(f"Preis über Grid — warte auf Signal ({long_c}/7 L {short_c}/7 S)", Y)
+                elif grid_mode == "SHORT":
+                    lowest = min(lv["entry_price"] for lv in grid)
+                    if preis < lowest * 0.998:
+                        if short_c >= MIN_SIGNAL:
+                            log(f"Preis unter Grid — SHORT Grid neu @ {fmt(preis)} ({short_c}/7)", Y)
+                            build_grid(preis, "SHORT")
+                            time.sleep(INTERVAL)
+                            prev_preis = preis
+                            continue
+                        else:
+                            log(f"Preis unter Grid — warte auf Signal ({long_c}/7 L {short_c}/7 S)", Y)
 
             rising  = prev_preis is not None and preis > prev_preis
             falling = prev_preis is not None and preis < prev_preis
