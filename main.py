@@ -36,7 +36,7 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0025  # BTC pro Level
+ORDER_SIZE   = 0.0029  # BTC pro Level
 GRID_LEVELS  = 5       # Anzahl Levels
 GRID_STEP    = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT  = 0.2     # % Gewinn pro Level
