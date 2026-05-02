@@ -36,9 +36,9 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.003  # BTC pro Level
+ORDER_SIZE   = 0.0015  # BTC pro Level
 GRID_LEVELS  = 5       # Anzahl Levels
-GRID_STEP    = 0.1     # % Abstand zwischen Levels
+GRID_STEP    = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT  = 0.2     # % Gewinn pro Level
 SL_PCT       = 1.0     # % außerhalb letztem Level → SL
 MIN_SIGNAL   = 4       # Min Indikatoren für ersten Start
@@ -311,7 +311,8 @@ def place_order(is_buy, price, size):
         return True
     try:
         from eth_account import Account
-        px    = round(price * (1.002 if is_buy else 0.998)) * int(1e18)
+        # Limit Order nahe am Marktpreis — 0.05% Slippage statt 0.2%
+        px    = round(price * (1.0005 if is_buy else 0.9995)) * int(1e18)
         amt   = int(size * 1e18) if is_buy else -int(size * 1e18)
         exp   = int(time.time()) + 60
         nonce = ((int(time.time() * 1000) + 5000) << 20) + random.randint(0, 99999)
@@ -351,6 +352,12 @@ def place_order(is_buy, price, size):
         if d.get("status") == "success":
             log("✅ Order OK!", G)
             last_order_t = time.time()
+            # Warte kurz und prüfe ob Order wirklich auf Nado gefüllt wurde
+            time.sleep(5)
+            nado = get_nado_position()
+            if nado is not None and abs(nado) < 0.0001 and not is_buy:
+                log("⚠️ Order wurde nicht gefüllt — State zurücksetzen", Y)
+                return "NOT_FILLED"
             return True
         code = d.get("error_code", 0)
         err  = d.get("error", "")
@@ -437,7 +444,8 @@ def close_all(preis, reason=""):
 
 def sync_nado(preis):
     """Prüft ob Bot-State mit Nado übereinstimmt."""
-    if (time.time() - last_order_t) < SYNC_WAIT:
+    # Warte nur 10 Sekunden nach Order bevor wir syncen
+    if (time.time() - last_order_t) < 10:
         return
     nado = get_nado_position()
     if nado is None: return
