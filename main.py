@@ -36,10 +36,10 @@ GATEWAY     = "https://gateway.prod.nado.xyz/v1"
 ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
-ORDER_SIZE   = 0.0022  # BTC pro Level
+ORDER_SIZE   = 0.003  # BTC pro Level
 GRID_LEVELS  = 5       # Anzahl Levels
-GRID_STEP    = 0.15     # % Abstand zwischen Levels
-GRID_PROFIT  = 0.15     # % Gewinn pro Level
+GRID_STEP    = 0.1     # % Abstand zwischen Levels
+GRID_PROFIT  = 0.2     # % Gewinn pro Level
 SL_PCT       = 1.0     # % außerhalb letztem Level → SL
 MIN_SIGNAL   = 4       # Min Indikatoren für ersten Start
 SYNC_WAIT    = 180     # Sek nach Order kein Sync
