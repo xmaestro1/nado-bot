@@ -44,7 +44,7 @@ SL_PCT       = 1.0     # % außerhalb letztem Level → SL
 MIN_SIGNAL   = 4       # Min Indikatoren für ersten Start
 SYNC_WAIT    = 180     # Sek nach Order kein Sync
 INTERVAL     = 30      # Sek pro Tick
-DRY_RUN      = True
+DRY_RUN      = False
 # ═══════════════════════════════════════════════════════════
 
 # State
@@ -311,8 +311,8 @@ def place_order(is_buy, price, size):
         return True
     try:
         from eth_account import Account
-        # Limit Order nahe am Marktpreis — 0.05% Slippage statt 0.2%
-        px    = round(price * (1.0005 if is_buy else 0.9995)) * int(1e18)
+        # 0.1% Slippage — nahe am Markt aber sicher gefüllt
+        px    = round(price * (1.001 if is_buy else 0.999)) * int(1e18)
         amt   = int(size * 1e18) if is_buy else -int(size * 1e18)
         exp   = int(time.time()) + 60
         nonce = ((int(time.time() * 1000) + 5000) << 20) + random.randint(0, 99999)
@@ -444,8 +444,8 @@ def close_all(preis, reason=""):
 
 def sync_nado(preis):
     """Prüft ob Bot-State mit Nado übereinstimmt."""
-    # Warte nur 10 Sekunden nach Order bevor wir syncen
-    if (time.time() - last_order_t) < 10:
+    # Warte 45 Sekunden nach Order bevor wir syncen
+    if (time.time() - last_order_t) < 45:
         return
     nado = get_nado_position()
     if nado is None: return
