@@ -38,7 +38,7 @@ ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
 ORDER_SIZE  = 0.0015  # BTC pro Level
-GRID_LEVELS = 3       # Anzahl Levels
+GRID_LEVELS = 4       # Anzahl Levels
 GRID_STEP   = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT = 0.2     # % Gewinn pro Level
 SL_PCT      = 1.0     # % gegen letztes gefülltes Level → SL
@@ -254,7 +254,16 @@ def build_grid(preis, modus):
         grid.append({"entry_price":ep, "exit_price":xp, "filled":False, "open_time":0.0})
     lvls = " | ".join(fmt(lv["entry_price"]) for lv in grid)
     log(f"{G if modus=='LONG' else R}{modus} Grid @ {fmt(preis)} | {lvls}{X}", C)
-    if modus == "LONG":
+    # Soforteinstieg nahe am Marktpreis
+    is_buy = (modus == "LONG")
+    log(f"{'🟢 LONG' if is_buy else '🔴 SHORT'} Soforteinstieg @ {fmt(preis)}", G if is_buy else R)
+    ok = place_order(is_buy, preis, ORDER_SIZE)
+    if ok is True:
+        xp = round(preis * (1+GRID_PROFIT/100)) if modus=="LONG" else round(preis * (1-GRID_PROFIT/100))
+        grid.insert(0, {"entry_price": round(preis), "exit_price": xp,
+                        "filled": True, "open_time": time.time()})
+        hatte_fills = True
+    elif modus == "LONG":
         log(f"Warte bis BTC fällt auf {fmt(grid[0]['entry_price'])}", Y)
     else:
         log(f"Warte bis BTC steigt auf {fmt(grid[0]['entry_price'])}", Y)
