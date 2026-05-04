@@ -38,13 +38,13 @@ ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
 ORDER_SIZE  = 0.0015  # BTC pro Level
-GRID_LEVELS = 1       # Anzahl Levels
+GRID_LEVELS = 3       # Anzahl Levels
 GRID_STEP   = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT = 0.2     # % Gewinn pro Level
 SL_PCT      = 1.0     # % gegen letztes gefülltes Level → SL
 MIN_SIGNAL  = 4       # Min Indikatoren für Start
 INTERVAL    = 30      # Sek pro Tick
-DRY_RUN     = True
+DRY_RUN     = False
 # ═══════════════════════════════════════════════════════════
 
 grid_mode    = None
