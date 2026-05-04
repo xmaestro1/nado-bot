@@ -38,7 +38,7 @@ ARCHIVE     = "https://archive.prod.nado.xyz/v1"
 HEADERS     = {"Accept-Encoding": "gzip", "Content-Type": "application/json"}
 
 ORDER_SIZE  = 0.0015  # BTC pro Level
-GRID_LEVELS = 4       # Anzahl Levels
+GRID_LEVELS = 5       # Anzahl Levels
 GRID_STEP   = 0.2     # % Abstand zwischen Levels
 GRID_PROFIT = 0.2     # % Gewinn pro Level
 SL_PCT      = 1.0     # % gegen letztes gefülltes Level → SL
@@ -305,18 +305,21 @@ def sync_nado():
     if (time.time() - last_order_t) < 45: return
     nado = get_nado_position()
     if nado is None: return
+    global hatte_fills
     if grid_mode == "LONG":
         ns = max(0.0, nado); bs = total_size()
         if abs(ns-bs) > 0.0001:
             log(f"Sync LONG: Bot={bs:.4f} | Nado={ns:.4f}", Y)
             if ns == 0:
                 for lv in grid: lv["filled"]=False; lv["open_time"]=0.0
+                # hatte_fills bleibt True → Grid wird neu aufgebaut
     elif grid_mode == "SHORT":
         ns = max(0.0, -nado); bs = total_size()
         if abs(ns-bs) > 0.0001:
             log(f"Sync SHORT: Bot={bs:.4f} | Nado={ns:.4f}", Y)
             if ns == 0:
                 for lv in grid: lv["filled"]=False; lv["open_time"]=0.0
+                # hatte_fills bleibt True → Grid wird neu aufgebaut
 
 
 # ─── LOOP ─────────────────────────────────────────────────
@@ -393,13 +396,13 @@ def loop():
             if real_filled() == 0 and hatte_fills and grid:
                 if grid_mode == "LONG":
                     highest = max(lv["entry_price"] for lv in grid)
-                    if preis > highest * 1.01 and lc >= MIN_SIGNAL:
+                    if preis > highest * 1.002 and lc >= MIN_SIGNAL:
                         log(f"LONG Grid neu @ {fmt(preis)} ({lc}/7)", Y)
                         build_grid(preis, "LONG")
                         time.sleep(INTERVAL); prev_preis = preis; continue
                 elif grid_mode == "SHORT":
                     lowest = min(lv["entry_price"] for lv in grid)
-                    if preis < lowest * 0.99 and sc >= MIN_SIGNAL:
+                    if preis < lowest * 0.998 and sc >= MIN_SIGNAL:
                         log(f"SHORT Grid neu @ {fmt(preis)} ({sc}/7)", Y)
                         build_grid(preis, "SHORT")
                         time.sleep(INTERVAL); prev_preis = preis; continue
