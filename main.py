@@ -44,7 +44,7 @@ GRID_PROFIT = 0.2     # % Gewinn pro Level
 SL_PCT      = 1.0     # % gegen letztes gefülltes Level → SL
 MIN_SIGNAL  = 4       # Min Indikatoren für Start
 INTERVAL    = 30      # Sek pro Tick
-DRY_RUN     = False
+DRY_RUN     = True
 # ═══════════════════════════════════════════════════════════
 
 grid_mode    = None
