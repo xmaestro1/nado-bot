@@ -258,14 +258,8 @@ def build_grid(preis, modus):
     log(f"{G if modus=='LONG' else R}{modus} Grid @ {fmt(preis)} | Levels: {lvls}{X}", C)
     sl_p = grid[0]["entry_price"] * (1 - SL_PCT/100) if modus=="LONG" else grid[0]["entry_price"] * (1 + SL_PCT/100)
     log(f"SL @ {fmt(sl_p)} ({SL_PCT}% gegen Level 1)", Y)
-    # Soforteinstieg
-    is_buy = (modus == "LONG")
-    ok = place_order(is_buy, preis, ORDER_SIZE)
-    if ok is True:
-        xp = round(preis * (1+GRID_PROFIT/100)) if modus=="LONG" else round(preis * (1-GRID_PROFIT/100))
-        grid.insert(0, {"entry_price":round(preis), "exit_price":xp,
-                        "filled":True, "open_time":time.time()})
-        log(f"{'🟢' if modus=='LONG' else '🔴'} Soforteinstieg @ {fmt(preis)}", G if modus=="LONG" else R)
+    # Kein Soforteinstieg — Bot wartet bis Preis das erste Level erreicht
+    log(f"Warte auf erstes Level: {fmt(grid[0]['entry_price'])}", Y)
 
 
 def close_all(preis, reason=""):
