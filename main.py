@@ -41,8 +41,8 @@ ORDER_SIZE   = 0.0015  # BTC pro Level
 GRID_LEVELS  = 3       # Anzahl Levels
 GRID_STEP    = 0.1     # % Abstand zwischen Levels
 GRID_PROFIT  = 0.1     # % Gewinn pro Level
-SL_PCT       = 0.3     # % gegen Einstieg → SL
-TRAIL_PCT    = 0.35    # % Trailing SL hinter laufendem Preis
+SL_PCT       = 0.5     # % gegen Einstieg → SL
+TRAIL_PCT    = 0.5    # % Trailing SL hinter laufendem Preis
 MIN_SIGNAL   = 5       # Min 5/7 für Trade öffnen
 SYNC_WAIT    = 180     # Sek nach Order kein Sync
 INTERVAL     = 30      # Sek pro Tick
@@ -342,7 +342,7 @@ def build_grid(preis, modus):
     ok = place_order(is_buy, preis, ORDER_SIZE)
     if ok is True:
         xp = round(preis*(1+GRID_PROFIT/100)) if modus=="LONG" else round(preis*(1-GRID_PROFIT/100))
-        grid.insert(0, {"entry_price":round(preis),"exit_price":xp,"filled":True,"open_time":time.time()})
+        grid[0] = {"entry_price":round(preis),"exit_price":xp,"filled":True,"open_time":time.time()}
         entry_preis = preis
         # Trailing SL sofort setzen
         if modus == "LONG":
