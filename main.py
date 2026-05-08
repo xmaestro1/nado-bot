@@ -46,7 +46,7 @@ TRAIL_PCT    = 0.5    # % Trailing SL hinter laufendem Preis
 MIN_SIGNAL   = 5       # Min 5/7 für Trade öffnen
 SYNC_WAIT    = 180     # Sek nach Order kein Sync
 INTERVAL     = 30      # Sek pro Tick
-DRY_RUN      = False
+DRY_RUN      = True
 # ═══════════════════════════════════════════════════════════
 
 # State
