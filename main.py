@@ -95,16 +95,21 @@ def get_preis():
 
 def get_kerzen(limit=100):
     try:
-        r = requests.post(ARCHIVE,
-            json={"candlesticks": {"product_id": PRODUCT_ID, "granularity": 300, "limit": limit}},
-            headers=HEADERS, timeout=15, verify=False)
-        cs = r.json().get("candlesticks", [])
-        if not cs: return None
-        candles = [{"o": float(c.get("open_x18",0))/1e18, "h": float(c.get("high_x18",0))/1e18,
-                    "l": float(c.get("low_x18",0))/1e18,  "c": float(c.get("close_x18",0))/1e18,
-                    "v": float(c.get("volume",0))/1e18} for c in cs]
-        return list(reversed(candles))
-    except Exception as e: log(f"Kerzen Fehler: {e}", Y)
+        r = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": "BTCUSDT", "interval": "5m", "limit": limit},
+            timeout=15
+        )
+        data = r.json()
+        if not data: return None
+        candles = [{
+            "o": float(c[1]), "h": float(c[2]),
+            "l": float(c[3]), "c": float(c[4]),
+            "v": float(c[5])
+        } for c in data]
+        return candles
+    except Exception as e:
+        log(f"Kerzen Fehler: {e}", Y)
     return None
 
 
