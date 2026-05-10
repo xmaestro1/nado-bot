@@ -521,7 +521,7 @@ def loop():
 
             # ── LONG GRID ─────────────────────────────────
             if grid_mode == "LONG":
-                if falling and long_c >= 4:
+                if falling and long_c >= 5:
                     for lv in grid:
                         if not lv["filled"] and preis <= lv["entry_price"]*1.001:
                             log(f"🟢 BUY @ {fmt(lv['entry_price'])} TP:{fmt(lv['exit_price'])}", G)
@@ -547,7 +547,7 @@ def loop():
 
             # ── SHORT GRID ────────────────────────────────
             elif grid_mode == "SHORT":
-                if rising and short_c >= 4:
+                if rising and short_c >= 5:
                     for lv in grid:
                         if not lv["filled"] and preis >= lv["entry_price"]*0.999:
                             log(f"🔴 SHORT @ {fmt(lv['entry_price'])} TP:{fmt(lv['exit_price'])}", R)
